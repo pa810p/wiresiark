@@ -27,6 +27,9 @@ local PORT = 32768
 ## Supported protocols:
 
 ### SIA DC-09
+<p align="center">
+  <img src="https://github.com/pa810p/wiresiark/assets/46489402/2e724cab-fb89-4fae-83bc-7eb73e022a4d">
+</p>
 
 #### Supported tokens:
 
