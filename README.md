@@ -1,5 +1,5 @@
 # wiresiark
-Wireshark plugins for decoding network packets
+Wireshark plugins for decoding exotic network protocols.
 
 ## Usage
 1. put **.lua** files into wireshark plugins directory e.g. 
