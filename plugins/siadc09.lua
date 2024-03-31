@@ -11,6 +11,7 @@ local PORT = 32768
 
 local sia = Proto("sia", "SIA DC")
 local adm_cid = Proto("adm_cid", "ADM-CID")
+local ext = Proto("ext", "Extended fields")
 
 -- SIA fields
 local fields = sia.fields
@@ -24,10 +25,10 @@ fields.receiver = ProtoField.string("sia.receiver", "Receiver")
 fields.line = ProtoField.string("sia.line", "Line")
 fields.number = ProtoField.string("sia.number", "Number")
 fields.content = ProtoField.string("sia.content", "Content")
+fields.timestamp = ProtoField.string("sia.timestamp", "Timestamp")
+fields.extended = ProtoField.string("sia.extended", "Extended")
 fields.cr = ProtoField.uint8("sia.cr", "CR")
 fields.encrypted_body = ProtoField.string("sia.encrypted_body", "Encrypted body")
-
-fields.debug = ProtoField.string("sia.debug", "Debug")
 
 -- ADM-CID fields
 local adm_cid_fields = adm_cid.fields
@@ -35,6 +36,8 @@ adm_cid_fields.event = ProtoField.string("adm_cid.event", "Event")
 adm_cid_fields.code = ProtoField.string("adm_cid.code", "Code")
 adm_cid_fields.group = ProtoField.string("adm_cid.group", "Group")
 adm_cid_fields.zone = ProtoField.string("adm_cid.zone", "Zone")
+
+
 
 local adm_cid_event_type = {
     ["1"] = "New",
@@ -269,6 +272,27 @@ local adm_cid_event_code = {
     ["654"] = "SYSTEM_INACTIVITY"
 }
 
+local extended_field_code = {
+    ["A"] = "Hash of the message",
+    ["C"] = "Identifier",
+    ["H"] = "Time of message",
+    ["I"] = "Alarm",
+    ["J"] = "Manufacturer id",
+    ["K"] = "Encryption key",
+    ["L"] = "Location",
+    ["M"] = "MAC address",
+    ["N"] = "Network address",
+    ["O"] = "Building name",
+    ["P"] = "Programming data",
+    ["R"] = "Room",
+    ["S"] = "Site name",
+    ["T"] = "Trigger",
+    ["V"] = "Verification",
+    ["X"] = "Longitude",
+    ["Y"] = "Latitude",
+    ["Z"] = "Altitude"
+}
+
 local function lookup(table, key, default)
     local value = table[key]
     return value ~= nil and value or default
@@ -278,12 +302,15 @@ local function get_adm_cid_event_code(key)
     return adm_cid_event_code[key] or "unknown"
 end
 
--- Define the dissector function
+local function get_extended_field_code(key)
+    return extended_field_code[key] or "unknown"
+end
+
 function sia.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol = "SIA"
     local sia_tree = tree:add(sia, buffer(), "SIA Digital Communication")
     local input = buffer(1, buffer:len() - 2):string()
-    local pattern = "(%w%w%w%w)0(%w%w%w)\"(%*?)([%w%-]+)\"(%d%d%d%d)(R%x?%x?%x?%x?%x?%x?)(L%x?%x?%x?%x?%x?%x?)(#%x%x%x%x?%x?%x?)(.*)"
+    local pattern = "(%w%w%w%w)0(%w%w%w)\"(%*?)([%w%-]+)\"(%d%d%d%d)(R?%x?%x?%x?%x?%x?%x?)(L%x%x?%x?%x?%x?%x?)(#%x%x?%x?%x?%x?%x?)(.*)"
     local buffer_data = buffer():string()
     local crc, length, star, protocol, sequence, receiver, line, number, body = input:match(pattern)
     local encrypted = false
@@ -295,25 +322,23 @@ function sia.dissector(buffer, pinfo, tree)
         encrypted = true
         sia_tree:add(fields.encrypted, buffer(10, 1), "True")
         sia_tree:add(fields.protocol, buffer(11, string.len(protocol)))
-        sia_tree:add(fields.sequence, buffer(10+string.len(protocol)+2, 4))
+        sia_tree:add(fields.sequence, buffer(10 + string.len(protocol) + 2, 4))
     else
         sia_tree:add(fields.encrypted, "False")
         sia_tree:add(fields.protocol, buffer(10, string.len(protocol)))
-        sia_tree:add(fields.sequence, buffer(10+string.len(protocol)+1, 4))
+        sia_tree:add(fields.sequence, buffer(10 + string.len(protocol) + 1, 4))
     end
-
 
     if receiver then
-        sia_tree:add(fields.receiver, buffer(string.find(buffer_data, receiver), string.len(receiver) -1))
+        sia_tree:add(fields.receiver, buffer(string.find(buffer_data, receiver), string.len(receiver) - 1))
     end
 
-    sia_tree:add(fields.line, buffer(string.find(buffer_data, line), string.len(line) -1))
-    sia_tree:add(fields.number, buffer(string.find(buffer_data, number), string.len(number) -1))
+    sia_tree:add(fields.line, buffer(string.find(buffer_data, line), string.len(line) - 1))
+    sia_tree:add(fields.number, buffer(string.find(buffer_data, number), string.len(number) - 1))
 
-    --sia_tree:add(fields.debug, encrypted)
     if encrypted then
         sia_tree:add(fields.encrypted_body, buffer(string.find(buffer_data, number) + string.len(number),
-                buffer:len() - (string.find(buffer_data, number) + string.len(number)) -1 ))
+                buffer:len() - (string.find(buffer_data, number) + string.len(number)) - 1 ))
     else
         if protocol == "ADM-CID" then
             local body_start = string.find(buffer_data, "|")
@@ -323,7 +348,41 @@ function sia.dissector(buffer, pinfo, tree)
             adm_cid_tree:add(adm_cid_fields.code, buffer(body_start + 1, 3), get_adm_cid_event_code(buffer(body_start + 1, 3):string()))
             adm_cid_tree:add(adm_cid_fields.group, buffer(body_start + 5, 2))
             adm_cid_tree:add(adm_cid_fields.zone, buffer(body_start + 8, 3))
+        end
 
+        -- extended fields
+        local ext_pattern = "%[([^%[%]]*)%]"
+        local extended_fields = string.sub(body, string.find(body, "]") + 1)
+        local ext_match = extended_fields:gmatch(ext_pattern)
+        local ext_fields_start =  string.find(buffer_data, "]")  -- extended fields start after content section
+        local ext_fields_end = buffer_data:match("^.*()]")
+
+        if ext_match and ext_fields_start ~= ext_fields_end then
+
+            local ext_tree = sia_tree:add(ext, buffer(ext_fields_start, ext_fields_end - ext_fields_start), "Extended fields")
+            local ext_fields = ext.fields
+
+            for ext_field in ext_match do
+                local ext_code = string.sub(ext_field, 0, 1)
+                local ext_value = string.sub(ext_field, 2)
+
+                local ext_field_start = string.find(buffer_data, ext_field:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")) - 1
+
+                -- workaround here, when ProtoField is created inside dissector function wireshark doesn't display
+                -- name, only value is displayed
+                -- value parameter of ext_tree:add function is ignored, but has to be set even when it's optional
+                ext_fields[ext_code] = ProtoField.string("ext." .. ext_code, get_extended_field_code(ext_code))
+                ext_tree:add(ext_fields[ext_code], buffer(ext_field_start, string.len(ext_value) + 1), "") -- (+1 = ext_code:len())
+                        :set_text(get_extended_field_code(ext_code) .. "(" .. ext_code .. "): " .. ext_value)
+            end
+        end
+
+        -- timestamp
+        local timestamp_pattern = "_(%d%d:%d%d:%d%d,%d%d%-%d%d%-%d%d%d%d)"
+        local timestamp = buffer_data:match(timestamp_pattern)
+        if timestamp then
+            local ext_fields_end = buffer_data:match("^.*()]")
+            sia_tree:add(fields.timestamp, buffer(ext_fields_end), timestamp)
         end
     end
 
@@ -332,6 +391,5 @@ end
 
 local tcp_table = DissectorTable.get("tcp.port")
 tcp_table:add(PORT, sia)
-
 
 
